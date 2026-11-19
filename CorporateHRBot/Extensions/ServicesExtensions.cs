@@ -24,5 +24,6 @@ public static class ServicesExtensions
         services.AddTransient<IUnitOfWork, UnitOfWork>();
         services.AddTransient<IModelEvaluatorToolService, ModelEvaluatorToolService>();
         services.AddTransient<IHrRagService, HrRagService>();
+        services.AddTransient<IDocumentService, DocumentService>();
     }
 }

@@ -1,23 +1,28 @@
-﻿using CorporateHRBot.Infrastructure.Repositories;
+﻿using CorporateHRBot.Entities;
 
 namespace CorporateHRBot.Services;
 
 public interface IDocumentService
 {
-    Task InsertFile(IFormFile file);
+    Task InsertFile(IFormFile file, CancellationToken cancellationToken);
 }
 
 public sealed class DocumentService : IDocumentService
 {
-    private readonly IDocumentsRepository _repository;
+    private readonly IHrRagService _hrRagService;
 
-    public DocumentService(IDocumentsRepository repository)
+    public DocumentService(IHrRagService hrRagService)
     {
-        _repository = repository;
+        _hrRagService = hrRagService;
     }
 
-    public async Task InsertFile(IFormFile file)
+    public async Task InsertFile(IFormFile file, CancellationToken cancellationToken)
     {
-        //file.
+        await using var stream = file.OpenReadStream();
+        using var readStream = new StreamReader(stream);
+
+        var content = await readStream.ReadToEndAsync(cancellationToken);
+
+        await _hrRagService.SplitDocumentbyChuncksAsync(file.FileName, new SplitDocumentIntoChunksRequest(content));
     }
 }
