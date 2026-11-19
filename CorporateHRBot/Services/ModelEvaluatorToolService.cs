@@ -97,7 +97,17 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
             using var doc = JsonDocument.Parse(jsonResponse);
             if (doc.RootElement.TryGetProperty("complexity", out var complexityElement))
             {
-                int intComplexity = Convert.ToInt32(complexityElement.GetString());
+                int intComplexity = 0;
+
+                if (complexityElement.ValueKind == JsonValueKind.String)
+                {
+                    intComplexity = Convert.ToInt32(complexityElement.GetString());
+                }
+                else if (complexityElement.ValueKind == JsonValueKind.Number)
+                {
+                    intComplexity = complexityElement.GetInt32();
+                }
+                
                 return intComplexity switch
                 {
                     0 => Complexity.Low,
