@@ -2,7 +2,9 @@
 using CorporateHRBot.Extensions;
 using CorporateHRBot.Infrastructure;
 using CorporateHRBot.Infrastructure.Repositories;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Identity.Web;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -16,6 +18,7 @@ if (!string.IsNullOrWhiteSpace(keyVaultUri))
 }
 
 builder.Services.AddControllers();
+builder.Services.AddAntiforgery();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddCustomOptions();
@@ -37,6 +40,8 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseAuthorization();
+
+app.UseAntiforgery();
 
 app.MapControllers();
 app.MapDocumentEndpoints();

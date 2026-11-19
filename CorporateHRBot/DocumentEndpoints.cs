@@ -15,8 +15,10 @@ public static class DocumentEndpoints
              .Produces(StatusCodes.Status400BadRequest)
              .Produces(StatusCodes.Status404NotFound);
 
-        group.MapPost("/{fileName}/split", SplitDocumentByChunksAsync)
+        group.MapPost("/split", SplitDocumentByChunksAsync)
              .WithName("SplitDocumentByChunks")
+             .Accepts<IFormFile>("multipart/form-data")
+             .DisableAntiforgery()
              .Produces(StatusCodes.Status201Created)
              .Produces(StatusCodes.Status400BadRequest)
              .Produces(StatusCodes.Status404NotFound);
@@ -25,19 +27,18 @@ public static class DocumentEndpoints
     }
 
     private static async Task<IResult> SplitDocumentByChunksAsync(
-        [FromRoute] string fileName,
-        [FromBody] SplitDocumentIntoChunksRequest request,
-        IHrRagService hrRagService,
+        IFormFile file,
+        IDocumentService documentService,
         CancellationToken cancellationToken)
     {
-        if (request == null || request.FullText == null)
+        if (file == null)
         {
-            return Results.BadRequest("No text to split.");
+            return Results.BadRequest("No file to insert.");
         }
 
         try
         {
-            await hrRagService.SplitDocumentbyChuncksAsync(fileName, request);
+            await documentService.InsertFile(file, cancellationToken);
 
             return Results.StatusCode(StatusCodes.Status201Created);
         }
