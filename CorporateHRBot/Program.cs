@@ -1,9 +1,7 @@
-﻿using Azure;
-using Azure.AI.OpenAI;
-using Azure.Identity;
+﻿using Azure.Identity;
+using CorporateHRBot.Extensions;
 using CorporateHRBot.Infrastructure;
 using CorporateHRBot.Infrastructure.Repositories;
-using CorporateHRBot.Services;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -20,29 +18,18 @@ if (!string.IsNullOrWhiteSpace(keyVaultUri))
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-builder.Services.AddTransient(provider =>
-{
-    var configuration = provider.GetRequiredService<IConfiguration>();
+builder.Services.AddCustomOptions();
 
-    string endpointUri = configuration["AzureOpenAI:Endpoint"]
-                         ?? throw new InvalidOperationException("No AzureOpenAI:Endpoint");
-    string apiKey = configuration["AzureOpenAI:ApiKey"]
-                    ?? throw new InvalidOperationException("No AzureOpenAI:ApiKey");
-
-    return new AzureOpenAIClient(new Uri(endpointUri), new AzureKeyCredential(apiKey));
-});
 builder.Services.AddDbContext<HrRagDbContext>(options =>
 {
     var connection = builder.Configuration["HRDbConnection"];
     options.UseSqlServer(connection);
 });
 builder.Services.AddTransient<IDocumentsRepository, DocumentsRepository>();
-builder.Services.AddTransient<IUnitOfWork, UnitOfWork>();
-builder.Services.AddTransient<IModelEvaluatorToolService, ModelEvaluatorToolService>();
-builder.Services.AddTransient<IHrRagService, HrRagService>();
+builder.Services.AddCustomService();
+
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
