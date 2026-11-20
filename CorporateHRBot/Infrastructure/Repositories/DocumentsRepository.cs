@@ -67,6 +67,7 @@ public sealed class DocumentsRepository : IDocumentsRepository
                     Score = (CosineSimilarity(chunk.Embedding, queryEmbeddings) * 0.7f) + (CalculateKeywordScore(chunk, keywords) * 0.3f)
                 };
             })
+            .Where(x => x.Score > 0.3)
             .OrderByDescending(x => x.Score)
             .Select(x => x.Chunk)
             .Take(topK)
