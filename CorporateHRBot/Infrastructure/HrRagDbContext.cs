@@ -11,7 +11,6 @@ public class HrRagDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // Настройка ограничений и индексов при создании таблиц
         modelBuilder.Entity<DocumentChunkEntity>()
             .HasIndex(d => d.FileName);
 

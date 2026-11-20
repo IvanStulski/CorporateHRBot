@@ -23,6 +23,6 @@ public sealed class DocumentService : IDocumentService
 
         var content = await readStream.ReadToEndAsync(cancellationToken);
 
-        await _hrRagService.SplitDocumentbyChuncksAsync(file.FileName, new SplitDocumentIntoChunksRequest(content));
+        await _hrRagService.SplitDocumentByChunksAsync(file.FileName, new SplitDocumentIntoChunksRequest(content));
     }
 }

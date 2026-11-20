@@ -10,13 +10,14 @@ namespace CorporateHRBot.Services;
 
 public interface IHrRagService
 {
-    public Task SplitDocumentbyChuncksAsync(string fileName, SplitDocumentIntoChunksRequest request);
+    public Task SplitDocumentByChunksAsync(string fileName, SplitDocumentIntoChunksRequest request);
 
     public Task<ChatResponse> GetAnswerAsync(string userQuery);
 }
 
 public sealed class HrRagService : IHrRagService
 {
+    private const string NoInformationFoundMessage = "No information found in corporate documents.";
     private const int NumberOfRelevantChunks = 3;
 
     private readonly IUnitOfWork _unitOfWork;
@@ -39,17 +40,36 @@ public sealed class HrRagService : IHrRagService
         _azureOpenAIOptions = azureOpenAIOptions;
     }
 
-    public async Task SplitDocumentbyChuncksAsync(string fileName, SplitDocumentIntoChunksRequest request)
+    public async Task SplitDocumentByChunksAsync(string fileName, SplitDocumentIntoChunksRequest request)
     {
+        if (string.IsNullOrWhiteSpace(request.FullText))
+        {
+            throw new InvalidOperationException("Document text is empty.");
+        }
+
         var chunks = SplitIntoChunks(request.FullText);
+
+        if (chunks.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "The document does not contain valid text chunks.");
+        }
 
         var dbChunks = new List<DocumentChunkEntity>();
         var embeddingClient = _azureOpenAIClient.GetEmbeddingClient(_azureOpenAIOptions.Value.EmbeddingModel);
+        var embeddingResults = await embeddingClient.GenerateEmbeddingsAsync(chunks);
 
-        for (int i = 0; i < chunks.Count; i++)
+        if (embeddingResults.Value.Count != chunks.Count)
         {
-            var embeddingResult = await embeddingClient.GenerateEmbeddingAsync(chunks[i]);
-            var vectorValues = embeddingResult.Value.ToFloats().ToArray();
+            throw new InvalidOperationException(
+                $"Embedding count mismatch. " +
+                $"Chunks: {chunks.Count}; " +
+                $"Embeddings: {embeddingResults.Value.Count}.");
+        }
+
+        for (int i = 0; i < embeddingResults.Value.Count; i++)
+        {
+            var vectorValues = embeddingResults.Value[i].ToFloats().ToArray();
             dbChunks.Add(new DocumentChunkEntity
             {
                 FileName = fileName,
@@ -59,21 +79,25 @@ public sealed class HrRagService : IHrRagService
             });
         }
 
-        await _repository.DeleteDocumentChunksByFileName(fileName);
-        await _repository.AddChunksAsync(dbChunks);
-
-        await _unitOfWork.CompeteAsync();
+        await _unitOfWork.CompeteInTransactionAsync(async () =>
+        {
+            await _repository.DeleteDocumentChunksByFileNameAsync(fileName);
+            await _repository.AddChunksAsync(dbChunks);
+        });
     }
 
     public async Task<ChatResponse> GetAnswerAsync(string userQuery)
     {
         var relevantChunks = await SearchRelevantChunksAsync(userQuery, topK: NumberOfRelevantChunks);
 
-        string contextText = relevantChunks.Count > 0
-            ? string.Join("\n---\n", relevantChunks.Select(c => $"[File: {c.FileName}, Part: {c.ChunkIndex}]\n{c.Content}"))
-            : "No information found in corporate documents.";
+        if (relevantChunks.Count == 0)
+        {
+            return new ChatResponse(NoInformationFoundMessage, []);
+        }
 
-        var systemPrompt = _azureOpenAIOptions.Value.QuestionPromptTemplate + contextText;
+        string contextText = string.Join("\n---\n", relevantChunks.Select(c => $"[File: {c.FileName}, Part: {c.ChunkIndex}]\n{c.Content}"));
+
+        var systemPrompt = $"{_azureOpenAIOptions.Value.QuestionPromptTemplate}\nDocument context:\n{contextText}";
 
         List<ChatMessage> messages =
         [
@@ -81,7 +105,7 @@ public sealed class HrRagService : IHrRagService
             new UserChatMessage(userQuery)
         ];
 
-        var chatClient = await _modelEvaluatorToolService.GetChatClientByComplexity(userQuery, CancellationToken.None);
+        var chatClient = await _modelEvaluatorToolService.GetChatClientByComplexity(userQuery, default);
         var completion = await chatClient.CompleteChatAsync(messages);
         var answerText = completion.Value.Content[0].Text;
 
@@ -110,7 +134,7 @@ public sealed class HrRagService : IHrRagService
     {
         var embeddings = await GetQueryEmbeddings(query);
 
-        return await _repository.GetChunksByQuery(query, topK, embeddings);
+        return await _repository.GetChunksByQueryAsync(query, topK, embeddings);
     }
 
     private async Task<float[]> GetQueryEmbeddings(string query)

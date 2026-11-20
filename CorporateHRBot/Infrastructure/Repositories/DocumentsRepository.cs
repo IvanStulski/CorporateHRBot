@@ -1,14 +1,13 @@
 ﻿using CorporateHRBot.Entities;
 using Microsoft.EntityFrameworkCore;
-using static Microsoft.Extensions.Logging.EventSource.LoggingEventSource;
 
 namespace CorporateHRBot.Infrastructure.Repositories;
 
 public interface IDocumentsRepository
 {
-    Task DeleteDocumentChunksByFileName(string fileName);
-    Task<List<DocumentChunkEntity>> GetDocumentChunksByFileName(string fileName);
-    Task<List<DocumentChunkEntity>> GetChunksByQuery(string query, int top, float[] embeddings);
+    Task DeleteDocumentChunksByFileNameAsync(string fileName);
+    Task<List<DocumentChunkEntity>> GetDocumentChunksByFileNameAsync(string fileName);
+    Task<List<DocumentChunkEntity>> GetChunksByQueryAsync(string query, int top, float[] embeddings);
     Task AddChunksAsync(IEnumerable<DocumentChunkEntity> chunk);
 }
 
@@ -36,47 +35,52 @@ public sealed class DocumentsRepository : IDocumentsRepository
         await _dbContext.DocumentChunks.AddRangeAsync(chunks);
     }
 
-    public async Task DeleteDocumentChunksByFileName(string fileName)
+    public async Task DeleteDocumentChunksByFileNameAsync(string fileName)
     {
         await _dbContext.DocumentChunks
             .Where(x => x.FileName == fileName)
             .ExecuteDeleteAsync();
     }
 
-    public async Task<List<DocumentChunkEntity>> GetDocumentChunksByFileName(string fileName)
+    public async Task<List<DocumentChunkEntity>> GetDocumentChunksByFileNameAsync(string fileName)
     {
         return await _dbContext.DocumentChunks.AsNoTracking()
             .Where(x => x.FileName == fileName)
             .ToListAsync();
     }
 
-    public async Task<List<DocumentChunkEntity>> GetChunksByQuery(string query, int topK, float[] queryEmbeddings)
+    public async Task<List<DocumentChunkEntity>> GetChunksByQueryAsync(string query, int topK, float[] queryEmbeddings)
     {
-        var allChunks = await _dbContext.DocumentChunks.AsNoTracking().ToListAsync();
+        var allChunks = await _dbContext.DocumentChunks
+            .AsNoTracking()
+            .ToListAsync();
         var keywords = ExtractKeywords(query);
 
         var rankedChunks = allChunks
             .Select(chunk =>
             {
                 float vectorScore = CosineSimilarity(chunk.Embedding, queryEmbeddings);
-                double keywordScore = CalculateKeywordScore(chunk, keywords);
+                float keywordScore = CalculateKeywordScore(chunk, keywords);
+                float hybridScore = vectorScore * 0.7f + keywordScore * 0.3f;
 
                 return new
                 {
                     Chunk = chunk,
-                    Score = (CosineSimilarity(chunk.Embedding, queryEmbeddings) * 0.7f) + (CalculateKeywordScore(chunk, keywords) * 0.3f)
+                    VectorScore = vectorScore,
+                    KeywordScore = keywordScore,
+                    Score = hybridScore
                 };
             })
-            .Where(x => x.Score > 0.3)
+            .Where(x => x.VectorScore > 0.25f || x.KeywordScore > 0)
             .OrderByDescending(x => x.Score)
-            .Select(x => x.Chunk)
             .Take(topK)
+            .Select(x => x.Chunk)
             .ToList();
 
-        return rankedChunks.ToList();
+        return rankedChunks;
     }
 
-    private static double CalculateKeywordScore(DocumentChunkEntity chunk, IReadOnlyCollection<string> keywords)
+    private static float CalculateKeywordScore(DocumentChunkEntity chunk, IReadOnlyCollection<string> keywords)
     {
         if (keywords.Count == 0)
         {
@@ -86,7 +90,7 @@ public sealed class DocumentsRepository : IDocumentsRepository
         string content = chunk.Content.ToLowerInvariant();
         string fileName = chunk.FileName.ToLowerInvariant();
 
-        double totalScore = 0;
+        var totalScore = 0f;
 
         foreach (string keyword in keywords)
         {
@@ -100,20 +104,20 @@ public sealed class DocumentsRepository : IDocumentsRepository
 
             if (existsInContent)
             {
-                totalScore += 1.0;
+                totalScore += 1.0f;
             }
 
             if (existsInFileName)
             {
-                totalScore += 1.5;
+                totalScore += 1.5f;
             }
         }
 
-        double maxPossibleScore = keywords.Count * 2.5;
+        float maxPossibleScore = keywords.Count * 2.5f;
 
         return maxPossibleScore == 0
             ? 0
-            : Math.Min(totalScore / maxPossibleScore, 1.0);
+            : MathF.Min(totalScore / maxPossibleScore, 1.0f);
     }
 
     private static float CosineSimilarity(float[] vecA, float[] vecB)

@@ -1,5 +1,4 @@
-﻿using CorporateHRBot.Entities;
-using CorporateHRBot.Services;
+﻿using CorporateHRBot.Services;
 using Microsoft.AspNetCore.Mvc;
 
 public static class DocumentEndpoints

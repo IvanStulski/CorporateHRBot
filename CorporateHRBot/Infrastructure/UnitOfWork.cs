@@ -2,7 +2,7 @@
 
 public interface IUnitOfWork
 {
-    Task CompeteAsync(CancellationToken cancellation = default);
+    Task CompeteInTransactionAsync(Func<Task> action, CancellationToken cancellation = default);
 }
 
 public sealed class UnitOfWork : IUnitOfWork
@@ -14,8 +14,23 @@ public sealed class UnitOfWork : IUnitOfWork
         _dbContext = dbContext;
     }
 
-    public async Task CompeteAsync(CancellationToken cancellation = default)
+    public async Task CompeteInTransactionAsync(Func<Task> action, CancellationToken cancellationToken)
     {
-        await _dbContext.SaveChangesAsync(cancellation);
+        await using var transaction = await _dbContext.Database
+            .BeginTransactionAsync(cancellationToken);
+
+        try
+        {
+            await action();
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
     }
 }
