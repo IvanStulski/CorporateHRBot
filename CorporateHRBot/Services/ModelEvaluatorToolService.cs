@@ -54,6 +54,27 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
     string input,
     CancellationToken cancellationToken)
     {
+        var cacheKey = CreateComplexityCacheKey(input);
+
+        try
+        {
+            string? cachedValue = await _cache.GetStringAsync(
+                cacheKey,
+                cancellationToken);
+
+            if (!string.IsNullOrWhiteSpace(cachedValue) &&
+                Enum.TryParse(
+                    cachedValue,
+                    ignoreCase: true,
+                    out Complexity cachedComplexity))
+            {
+                return cachedComplexity;
+            }
+        }
+        catch
+        {
+        }
+
         var chatClient = _azureOpenAIClient.GetChatClient(
             _azureOpenAIOptions.Value.BaseEvaluateModel);
 
@@ -62,7 +83,7 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
             new SystemChatMessage("""
                 Use the EvaluateModelComplexity tool exactly once.
 
-                Pass the user request as the prompt argument.
+                Pass the user request as the input argument.
                 Do not determine complexity yourself.
                 """),
 
@@ -72,7 +93,7 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
         var evaluateComplexityTool = ChatTool.CreateFunctionTool(
             functionName: EvaluateModelComplexityToolName,
             functionDescription: """
-            Evaluates a prompt and returns its complexity:
+            Evaluates a input and returns its complexity:
             0 = low, 1 = middle, 2 = high.
             """,
             functionParameters: BinaryData.FromString("""
@@ -81,7 +102,7 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
               "properties": {
                 "input": {
                   "type": "string",
-                  "description": "The user prompt to evaluate."
+                  "description": "The user input to evaluate."
                 }
               },
               "required": ["input"],
@@ -106,6 +127,7 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
             {
                 return await EvaluateModelComplexityToolAsync(
                     input,
+                    cacheKey,
                     cancellationToken);
             }
 
@@ -119,13 +141,13 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
                 using JsonDocument document = JsonDocument.Parse(
                     toolCall.FunctionArguments);
 
-                string prompt = document.RootElement
-                    .GetProperty("input")
-                    .GetString()
-                    ?? input;
+                string prompt = document.RootElement.TryGetProperty("input", out var promptElement)
+                        ? promptElement.GetString() ?? input
+                        : input;
 
                 return await EvaluateModelComplexityToolAsync(
                     prompt,
+                    cacheKey,
                     cancellationToken);
             }
 
@@ -139,29 +161,9 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
 
     private async Task<Complexity> EvaluateModelComplexityToolAsync(
     string prompt,
+    string cacheKey,
     CancellationToken cancellationToken)
     {
-        var cacheKey = CreateComplexityCacheKey(prompt);
-
-        try
-        {
-            string? cachedValue = await _cache.GetStringAsync(
-                cacheKey,
-                cancellationToken);
-
-            if (!string.IsNullOrWhiteSpace(cachedValue) &&
-                Enum.TryParse(
-                    cachedValue,
-                    ignoreCase: true,
-                    out Complexity cachedComplexity))
-            {
-                return cachedComplexity;
-            }
-        }
-        catch
-        {
-        }
-
         var complexity = await EvaluateComplexityByAiAsync(
             prompt,
             cancellationToken);
