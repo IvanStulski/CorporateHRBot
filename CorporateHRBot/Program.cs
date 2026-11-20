@@ -5,11 +5,20 @@ using CorporateHRBot.Infrastructure.Repositories;
 using CorporateHRBot.Options;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
-using Microsoft.Identity.Web;
+using Serilog;
+
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .WriteTo.Console()
+    .WriteTo.File(
+        path: "Logs/log-.txt",
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 14,
+        shared: true)
+    .CreateLogger();
 
 var builder = WebApplication.CreateBuilder(args);
-
+builder.Host.UseSerilog();
 var keyVaultUri = builder.Configuration["KeyVault:VaultUri"];
 
 if (!string.IsNullOrWhiteSpace(keyVaultUri))
@@ -59,4 +68,12 @@ app.MapControllers();
 app.MapDocumentEndpoints();
 
 app.MapMcp();
-app.Run();
+try
+{
+    app.Run();
+}
+finally
+{
+    Log.CloseAndFlush();
+}
+

@@ -23,15 +23,18 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
 
     private readonly AzureOpenAIClient _azureOpenAIClient;
     private readonly IOptions<AIRequestsOptions> _azureOpenAIOptions;
+    private readonly ILogger<ModelEvaluatorToolService> _logger;
     private readonly IDistributedCache _cache;
 
     public ModelEvaluatorToolService(
         AzureOpenAIClient azureOpenAIClient,
         IOptions<AIRequestsOptions> azureOpenAIOptions,
+        ILogger<ModelEvaluatorToolService> logger,
         IDistributedCache cache)
     {
         _azureOpenAIClient = azureOpenAIClient;
         _azureOpenAIOptions = azureOpenAIOptions;
+        _logger = logger;
         _cache = cache;
     }
 
@@ -71,8 +74,9 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
                 return cachedComplexity;
             }
         }
-        catch
+        catch (Exception exception)
         {
+            _logger.LogWarning($"Redis does't works at time {DateTime.UtcNow}. Input: {input}. {exception.Message}");
         }
 
         var chatClient = _azureOpenAIClient.GetChatClient(
@@ -153,8 +157,9 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
 
             return Complexity.Middle;
         }
-        catch
+        catch (Exception exception)
         {
+            _logger.LogWarning($"Problem with Redis or AI tools encountered at time. Input: {input}. {exception.Message}");
             return Complexity.Middle;
         }
     }
@@ -180,9 +185,9 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
                 },
                 cancellationToken);
         }
-        catch
+        catch (Exception exception)
         {
-            
+            _logger.LogWarning($"Problem with Redis or AI tools encountered at time. Input: {prompt}. {exception.Message}");
         }
 
         return complexity;
@@ -254,8 +259,9 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
                 _ => Complexity.Middle
             };
         }
-        catch
+        catch (Exception exception)
         {
+            _logger.LogWarning($"Problem with Redis or AI tools encountered at time. Input: {prompt}. {exception.Message}");
             return Complexity.Middle;
         }
     }
