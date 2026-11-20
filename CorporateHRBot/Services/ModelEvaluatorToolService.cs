@@ -17,6 +17,8 @@ public interface IModelEvaluatorToolService
 
 public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
 {
+    private const int AbsoluteExpirationRelativeToNow = 12;
+    private const int RedisSlidingExpiration = 2;
     private const string EvaluateModelComplexityToolName = "EvaluateModelComplexity";
 
     private readonly AzureOpenAIClient _azureOpenAIClient;
@@ -35,21 +37,7 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
 
     public async Task<ChatClient> GetChatClientByComplexity(string input, CancellationToken token)
     {
-        var cacheKey = CreateComplexityCacheKey(input);
-        var cachedValue = await _cache.GetStringAsync(cacheKey, token);
-        var complexity = await GetRequestComplexity(input, cacheKey, cachedValue, token);
-        
-        if (string.IsNullOrWhiteSpace(cachedValue))
-        {
-            await _cache.SetStringAsync(
-            cacheKey,
-            complexity.ToString(),
-            new DistributedCacheEntryOptions
-            {
-                AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(12),
-                SlidingExpiration = TimeSpan.FromHours(2)
-            }, token);
-        }
+        var complexity = await GetRequestComplexity(input, token);
         
         var targetModelName = complexity switch
         {
@@ -62,90 +50,207 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
         return _azureOpenAIClient.GetChatClient(targetModelName);
     }
 
-    private async Task<Complexity> GetRequestComplexity(string input, string cacheKey, string? cachedValue, CancellationToken token)
+    private async Task<Complexity> GetRequestComplexity(
+    string input,
+    CancellationToken cancellationToken)
     {
-        var chatClient = _azureOpenAIClient.GetChatClient(_azureOpenAIOptions.Value.BaseEvaluateModel);
+        var chatClient = _azureOpenAIClient.GetChatClient(
+            _azureOpenAIOptions.Value.BaseEvaluateModel);
+
         var conversation = new List<ChatMessage>
         {
-            new SystemChatMessage(_azureOpenAIOptions.Value.ComplexityEvaluationPrompt),
+            new SystemChatMessage("""
+                Use the EvaluateModelComplexity tool exactly once.
+
+                Pass the user request as the prompt argument.
+                Do not determine complexity yourself.
+                """),
+
             new UserChatMessage(input)
         };
-        var getRequestComplexityTool = ChatTool.CreateFunctionTool(
-           functionName: EvaluateModelComplexityToolName,
-           functionDescription: "Get complexity of user query.",
-           functionParameters: BinaryData.FromString("""
+
+        var evaluateComplexityTool = ChatTool.CreateFunctionTool(
+            functionName: EvaluateModelComplexityToolName,
+            functionDescription: """
+            Evaluates a prompt and returns its complexity:
+            0 = low, 1 = middle, 2 = high.
+            """,
+            functionParameters: BinaryData.FromString("""
             {
-                "type": "object",
-                "properties": {
-                    "input": {
-                        "type": "string",
-                        "description": "User query."
-                    }
-                },
-                "required": ["input"]
+              "type": "object",
+              "properties": {
+                "input": {
+                  "type": "string",
+                  "description": "The user prompt to evaluate."
+                }
+              },
+              "required": ["input"],
+              "additionalProperties": false
             }
-            """)
-        );
+            """));
+
         var options = new ChatCompletionOptions
         {
-            ResponseFormat = ChatResponseFormat.CreateJsonObjectFormat(),
             Temperature = 0.0f,
-            Tools = { getRequestComplexityTool }
+            Tools = { evaluateComplexityTool }
         };
 
         try
         {
-            var response = await chatClient.CompleteChatAsync(conversation, options, cancellationToken: token);
+            var response = await chatClient.CompleteChatAsync(
+                conversation,
+                options,
+                cancellationToken: cancellationToken);
 
-            if (response.Value.FinishReason == ChatFinishReason.ToolCalls)
+            if (response.Value.FinishReason != ChatFinishReason.ToolCalls)
             {
-                conversation.Add(new AssistantChatMessage(response.Value));
+                return await EvaluateModelComplexityToolAsync(
+                    input,
+                    cancellationToken);
+            }
 
-                foreach (var toolCall in response.Value.ToolCalls)
+            foreach (ChatToolCall toolCall in response.Value.ToolCalls)
+            {
+                if (toolCall.FunctionName != EvaluateModelComplexityToolName)
                 {
-                    if (toolCall.FunctionName == EvaluateModelComplexityToolName)
-                    {
-                        using var document = JsonDocument.Parse(toolCall.FunctionArguments);
-                        if (document.RootElement.TryGetProperty("input", out var userInputElement))
-                        {
-                            if (!string.IsNullOrWhiteSpace(cachedValue) &&
-                                Enum.TryParse(cachedValue, ignoreCase: true, out Complexity cachedComplexity))
-                            {
-                                return cachedComplexity;
-                            }
-                            
-                            conversation.Add(new ToolChatMessage(toolCall.Id, $"Project result of input carefully in integer format: {userInputElement}"));
-                        }
-                    }
+                    continue;
                 }
 
-                response = await chatClient.CompleteChatAsync(conversation, options, cancellationToken: token);
+                using JsonDocument document = JsonDocument.Parse(
+                    toolCall.FunctionArguments);
+
+                string prompt = document.RootElement
+                    .GetProperty("input")
+                    .GetString()
+                    ?? input;
+
+                return await EvaluateModelComplexityToolAsync(
+                    prompt,
+                    cancellationToken);
             }
+
+            return Complexity.Middle;
+        }
+        catch
+        {
+            return Complexity.Middle;
+        }
+    }
+
+    private async Task<Complexity> EvaluateModelComplexityToolAsync(
+    string prompt,
+    CancellationToken cancellationToken)
+    {
+        var cacheKey = CreateComplexityCacheKey(prompt);
+
+        try
+        {
+            string? cachedValue = await _cache.GetStringAsync(
+                cacheKey,
+                cancellationToken);
+
+            if (!string.IsNullOrWhiteSpace(cachedValue) &&
+                Enum.TryParse(
+                    cachedValue,
+                    ignoreCase: true,
+                    out Complexity cachedComplexity))
+            {
+                return cachedComplexity;
+            }
+        }
+        catch
+        {
+        }
+
+        var complexity = await EvaluateComplexityByAiAsync(
+            prompt,
+            cancellationToken);
+
+        try
+        {
+            await _cache.SetStringAsync(
+                cacheKey,
+                complexity.ToString(),
+                new DistributedCacheEntryOptions
+                {
+                    AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(AbsoluteExpirationRelativeToNow),
+                    SlidingExpiration = TimeSpan.FromHours(RedisSlidingExpiration)
+                },
+                cancellationToken);
+        }
+        catch
+        {
+            
+        }
+
+        return complexity;
+    }
+
+    private async Task<Complexity> EvaluateComplexityByAiAsync(
+    string prompt,
+    CancellationToken cancellationToken)
+    {
+        ChatClient chatClient = _azureOpenAIClient.GetChatClient(
+            _azureOpenAIOptions.Value.BaseEvaluateModel);
+
+        var messages = new List<ChatMessage>
+        {
+            new SystemChatMessage("""
+                Evaluate the complexity of the user request.
+
+                Return JSON only, without Markdown or explanation.
+
+                Valid values:
+                {"complexity": 0} - low complexity.
+                {"complexity": 1} - middle complexity.
+                {"complexity": 2} - high complexity.
+                """),
+
+            new UserChatMessage(prompt)
+        };
+
+        var options = new ChatCompletionOptions
+        {
+            ResponseFormat = ChatResponseFormat.CreateJsonObjectFormat(),
+            Temperature = 0.0f,
+            MaxOutputTokenCount = 20
+        };
+
+        try
+        {
+            var response = await chatClient.CompleteChatAsync(
+                messages,
+                options,
+                cancellationToken: cancellationToken);
+
             string jsonResponse = response.Value.Content[0].Text.Trim();
 
-            using var doc = JsonDocument.Parse(jsonResponse);
-            if (doc.RootElement.TryGetProperty("complexity", out var complexityElement))
-            {
-                int intComplexity = 0;
+            using JsonDocument document = JsonDocument.Parse(jsonResponse);
 
-                if (complexityElement.ValueKind == JsonValueKind.String)
-                {
-                    intComplexity = Convert.ToInt32(complexityElement.GetString());
-                }
-                else if (complexityElement.ValueKind == JsonValueKind.Number)
-                {
-                    intComplexity = complexityElement.GetInt32();
-                }
-                
-                return intComplexity switch
-                {
-                    0 => Complexity.Low,
-                    1 => Complexity.Middle,
-                    2 => Complexity.High,
-                    _ => Complexity.Low
-                };
+            if (!document.RootElement.TryGetProperty(
+                    "complexity",
+                    out JsonElement complexityElement))
+            {
+                return Complexity.Middle;
             }
-            return Complexity.Middle;
+
+            int complexityValue = complexityElement.ValueKind switch
+            {
+                JsonValueKind.Number => complexityElement.GetInt32(),
+                JsonValueKind.String when int.TryParse(
+                    complexityElement.GetString(),
+                    out int parsedComplexity) => parsedComplexity,
+
+                _ => 1
+            };
+
+            return complexityValue switch
+            {
+                0 => Complexity.Low,
+                1 => Complexity.Middle,
+                2 => Complexity.High,
+                _ => Complexity.Middle
+            };
         }
         catch
         {
