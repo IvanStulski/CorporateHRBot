@@ -1,6 +1,7 @@
 ﻿using Azure.AI.OpenAI;
 using CorporateHRBot.Options;
 using CorporateHRBot.Services;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Options;
 using Moq;
 using OpenAI.Chat;
@@ -22,6 +23,7 @@ public sealed class ModelEvaluatorToolServiceTests
         var mockEvaluateChatClient = new Mock<ChatClient>();
         var mockTargetChatClient = new Mock<ChatClient>();
         var mockOptions = new Mock<IOptions<AIRequestsOptions>>();
+        var mockCache = new Mock<IDistributedCache>();
 
         mockAzureClient
             .Setup(c => c.GetChatClient("gpt-4.1-nano"))
@@ -69,7 +71,7 @@ public sealed class ModelEvaluatorToolServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(ClientResult.FromValue(fakeCompletion, Mock.Of<PipelineResponse>()));
 
-        var service = new ModelEvaluatorToolService(mockAzureClient.Object, mockOptions.Object);
+        var service = new ModelEvaluatorToolService(mockAzureClient.Object, mockOptions.Object, mockCache.Object);
 
         // Act
         var resultClient = await service.GetChatClientByComplexity("Hello, how are you?", CancellationToken.None);
