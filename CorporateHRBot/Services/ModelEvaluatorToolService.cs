@@ -1,8 +1,11 @@
 ﻿using Azure.AI.OpenAI;
 using CorporateHRBot.Entities;
 using CorporateHRBot.Options;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Options;
 using OpenAI.Chat;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace CorporateHRBot.Services;
@@ -18,16 +21,36 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
 
     private readonly AzureOpenAIClient _azureOpenAIClient;
     private readonly IOptions<AIRequestsOptions> _azureOpenAIOptions;
+    private readonly IDistributedCache _cache;
 
-    public ModelEvaluatorToolService(AzureOpenAIClient azureOpenAIClient, IOptions<AIRequestsOptions> azureOpenAIOptions)
+    public ModelEvaluatorToolService(
+        AzureOpenAIClient azureOpenAIClient,
+        IOptions<AIRequestsOptions> azureOpenAIOptions,
+        IDistributedCache cache)
     {
         _azureOpenAIClient = azureOpenAIClient;
         _azureOpenAIOptions = azureOpenAIOptions;
+        _cache = cache;
     }
 
     public async Task<ChatClient> GetChatClientByComplexity(string input, CancellationToken token)
     {
-        var complexity = await GetRequestComplexity(input, token);
+        var cacheKey = CreateComplexityCacheKey(input);
+        var cachedValue = await _cache.GetStringAsync(cacheKey, token);
+        var complexity = await GetRequestComplexity(input, cacheKey, cachedValue, token);
+        
+        if (string.IsNullOrWhiteSpace(cachedValue))
+        {
+            await _cache.SetStringAsync(
+            cacheKey,
+            complexity.ToString(),
+            new DistributedCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(12),
+                SlidingExpiration = TimeSpan.FromHours(2)
+            }, token);
+        }
+        
         var targetModelName = complexity switch
         {
             Complexity.Low => _azureOpenAIOptions.Value.LowComplexityModel,
@@ -39,7 +62,7 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
         return _azureOpenAIClient.GetChatClient(targetModelName);
     }
 
-    private async Task<Complexity> GetRequestComplexity(string input, CancellationToken token)
+    private async Task<Complexity> GetRequestComplexity(string input, string cacheKey, string? cachedValue, CancellationToken token)
     {
         var chatClient = _azureOpenAIClient.GetChatClient(_azureOpenAIOptions.Value.BaseEvaluateModel);
         var conversation = new List<ChatMessage>
@@ -85,6 +108,12 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
                         using var document = JsonDocument.Parse(toolCall.FunctionArguments);
                         if (document.RootElement.TryGetProperty("input", out var userInputElement))
                         {
+                            if (!string.IsNullOrWhiteSpace(cachedValue) &&
+                                Enum.TryParse(cachedValue, ignoreCase: true, out Complexity cachedComplexity))
+                            {
+                                return cachedComplexity;
+                            }
+                            
                             conversation.Add(new ToolChatMessage(toolCall.Id, $"Project result of input carefully in integer format: {userInputElement}"));
                         }
                     }
@@ -122,5 +151,19 @@ public sealed class ModelEvaluatorToolService : IModelEvaluatorToolService
         {
             return Complexity.Middle;
         }
+    }
+
+    private static string CreateComplexityCacheKey(string input)
+    {
+        string normalizedInput = input
+            .Trim()
+            .ToLowerInvariant()
+            .Replace("\r\n", "\n")
+            .Replace("\n", " ");
+
+        byte[] hash = SHA256.HashData(
+            Encoding.UTF8.GetBytes(normalizedInput));
+
+        return $"complexity:{Convert.ToHexString(hash)}";
     }
 }

@@ -1,3 +1,3 @@
 ﻿namespace CorporateHRBot.Entities;
 
-public record SourceReference(string FileName, int chunkIndex);
+public record SourceReference(string FileName, int ChunkIndex);

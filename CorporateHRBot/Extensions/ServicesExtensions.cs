@@ -25,5 +25,9 @@ public static class ServicesExtensions
         services.AddTransient<IModelEvaluatorToolService, ModelEvaluatorToolService>();
         services.AddTransient<IHrRagService, HrRagService>();
         services.AddTransient<IDocumentService, DocumentService>();
+        services
+            .AddMcpServer()
+            .WithHttpTransport()
+            .WithToolsFromAssembly();
     }
 }
